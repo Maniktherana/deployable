@@ -23,6 +23,7 @@ export class CaddyService extends Context.Service<CaddyService, CaddyServiceShap
 ) {}
 
 const MANAGED_GROUP = "deployable-managed";
+const ROUTES_PATH = "/config/apps/http/servers/srv0/routes";
 
 const buildRouteConfig = (route: CaddyRoute) => ({
   group: MANAGED_GROUP,
@@ -45,7 +46,11 @@ const parseRouteConfig = (entry: {
   return { hostname: host, upstream: dial };
 };
 
-const ROUTES_PATH = "/config/apps/http/servers/srv0/routes";
+const hostnameOf = (entry: Record<string, unknown>): string | undefined =>
+  (entry as { match?: Array<{ host?: string[] }> }).match?.[0]?.host?.[0];
+
+const isManaged = (entry: Record<string, unknown>): boolean =>
+  (entry as { group?: string }).group === MANAGED_GROUP;
 
 export const CaddyServiceLive = Layer.effect(
   CaddyService,
@@ -92,12 +97,6 @@ export const CaddyServiceLive = Layer.effect(
             message: `putRoutes: ${e instanceof Error ? e.message : String(e)}`,
           }),
       });
-
-    const hostnameOf = (entry: Record<string, unknown>): string | undefined =>
-      (entry as { match?: Array<{ host?: string[] }> }).match?.[0]?.host?.[0];
-
-    const isManaged = (entry: Record<string, unknown>): boolean =>
-      (entry as { group?: string }).group === MANAGED_GROUP;
 
     const addRoute: CaddyServiceShape["addRoute"] = (route) =>
       Effect.gen(function* () {

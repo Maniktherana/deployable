@@ -134,11 +134,11 @@ export class DeploymentService extends Context.Service<DeploymentService, Deploy
   "@deployable/api/Services/DeploymentService",
 ) {}
 
+const DEPLOYMENT_CONCURRENCY_KEY = "deployment.concurrency";
+
 function nowIso(): string {
   return new Date().toISOString();
 }
-
-const DEPLOYMENT_CONCURRENCY_KEY = "deployment.concurrency";
 
 function makeId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
@@ -324,7 +324,6 @@ export const DeploymentServiceLive = Layer.effect(
               .set({
                 status: input.status,
                 imageTag: input.imageTag,
-                // Only persist liveUrl when the deployment is actually running
                 liveUrl: input.status === "running" ? (input.liveUrl ?? null) : null,
                 containerId: input.containerId,
                 updatedAt: timestamp,
@@ -407,11 +406,6 @@ export const DeploymentServiceLive = Layer.effect(
                     .run();
                 }
               }
-              // Persist build/start command overrides into app_settings so the
-              // worker can read them later when running railpack. We only touch
-              // these columns when the caller explicitly provided a value
-              // (including an empty string -> "clear it"), leaving any other
-              // settings (port, healthPath) intact.
               if (input.buildCommand !== undefined || input.startCommand !== undefined) {
                 const existing = tx.query.appSettings
                   .findFirst({ where: eq(appSettings.appId, app.id) })
@@ -649,7 +643,6 @@ export const DeploymentServiceLive = Layer.effect(
             );
           }
 
-          // Walk back through rollback chains to find the original build source.
           let buildSource = source;
           while (buildSource.source.type === "rollback" && buildSource.rollbackSourceDeploymentId) {
             buildSource = yield* getDeployment(buildSource.rollbackSourceDeploymentId);
@@ -810,7 +803,6 @@ export const DeploymentServiceLive = Layer.effect(
               .from(appSettings)
               .where(eq(appSettings.appId, appId))
               .get();
-            // Treat undefined as "do not change", empty string as "clear".
             const nextBuild =
               buildCommand !== undefined
                 ? buildCommand.trim() || null
@@ -903,16 +895,9 @@ export const DeploymentServiceLive = Layer.effect(
 
           const ts = nowIso();
           const containerName = `deployable-${app.slug}-${deploymentId}`;
-          const settings = db
-            .select()
-            .from(appSettings)
-            .where(eq(appSettings.appId, appId))
-            .get();
+          const settings = db.select().from(appSettings).where(eq(appSettings.appId, appId)).get();
           const appPort = settings?.port ?? 3000;
 
-          // Start a fresh container from the existing image. Same env shape
-          // as the deploy worker: user vars + PORT (railpack-generated
-          // entrypoints listen on $PORT).
           const envVars = yield* Effect.sync(() => {
             const rows = db.select().from(appEnvVars).where(eq(appEnvVars.appId, appId)).all();
             const map = Object.fromEntries(rows.map((r) => [r.key, r.value])) as Record<
@@ -975,7 +960,6 @@ export const DeploymentServiceLive = Layer.effect(
             return yield* Effect.fail(new AppNotFoundError({ appId }));
           }
 
-          // Stop any running containers tied to this app (regardless of activeDeploymentId).
           const containerIds = db
             .select({ id: deployments.containerId })
             .from(deployments)
@@ -1011,7 +995,7 @@ export const DeploymentServiceLive = Layer.effect(
                   .run();
               }
               tx.delete(deploymentCommands).where(eq(deploymentCommands.appId, appId)).run();
-              // Clear FK from apps -> deployments before deleting deployments.
+              // FK: clear apps.activeDeploymentId before deleting deployments
               tx.update(apps)
                 .set({ activeDeploymentId: null, updatedAt: nowIso() })
                 .where(eq(apps.id, appId))

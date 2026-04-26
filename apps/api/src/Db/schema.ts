@@ -70,7 +70,9 @@ export const deploymentLogs = sqliteTable(
       .notNull()
       .references(() => deployments.id),
     sequence: integer("sequence").notNull(),
-    phase: text("phase", { enum: ["prepare", "build", "deploy", "runtime"] }).notNull(),
+    phase: text("phase", {
+      enum: ["prepare", "build", "deploy", "runtime"],
+    }).notNull(),
     level: text("level", { enum: ["info", "warn", "error"] }).notNull(),
     message: text("message").notNull(),
     createdAt: text("created_at").notNull(),
@@ -92,7 +94,9 @@ export const deploymentCommands = sqliteTable(
     appId: text("app_id")
       .notNull()
       .references(() => apps.id),
-    status: text("status", { enum: ["pending", "running", "succeeded", "failed"] }).notNull(),
+    status: text("status", {
+      enum: ["pending", "running", "succeeded", "failed"],
+    }).notNull(),
     claimedBy: text("claimed_by"),
     claimedAt: text("claimed_at"),
     createdAt: text("created_at").notNull(),
@@ -110,7 +114,9 @@ export const outboxEvents = sqliteTable(
     id: text("id").primaryKey(),
     topic: text("topic").notNull(),
     payloadJson: text("payload_json").notNull(),
-    status: text("status", { enum: ["pending", "published", "failed"] }).notNull(),
+    status: text("status", {
+      enum: ["pending", "published", "failed"],
+    }).notNull(),
     createdAt: text("created_at").notNull(),
     publishedAt: text("published_at"),
   },

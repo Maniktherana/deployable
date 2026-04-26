@@ -242,9 +242,7 @@ export const DockerServiceLive = Layer.succeed(DockerService, {
   stopContainer: (containerId) =>
     Effect.tryPromise({
       try: async () => {
-        // t=2: only wait 2s for SIGTERM before SIGKILL. Default is 10s
-        // which makes the UI feel hung when stopping things like static
-        // sites whose caddy ignores SIGTERM.
+        // t=2 (default 10) — keeps the UI responsive for containers that ignore SIGTERM.
         const resp = await dockerFetch(`/containers/${containerId}/stop?t=2`, {
           method: "POST",
         });

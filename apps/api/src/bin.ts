@@ -7,7 +7,6 @@ const fiber = Effect.runFork(runServer.pipe(Effect.provide(ApiConfig.layerFromEn
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
-    // Fiber.interrupt sends interrupt and awaits full teardown including finalizers
     Fiber.interrupt(fiber)
       .pipe(Effect.runPromise)
       .then(

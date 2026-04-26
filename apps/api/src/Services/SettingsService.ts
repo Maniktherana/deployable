@@ -5,6 +5,8 @@ import { DatabaseService } from "../Db/Database.ts";
 import { settings } from "../Db/schema.ts";
 
 const DEPLOYMENT_CONCURRENCY_KEY = "deployment.concurrency";
+const MIN_CONCURRENCY = 1;
+const MAX_CONCURRENCY = 16;
 
 export interface AppSettings {
   readonly deploymentConcurrency: number;
@@ -25,6 +27,10 @@ export class SettingsValidationError extends Error {
 export class SettingsService extends Context.Service<SettingsService, SettingsServiceShape>()(
   "@deployable/api/Services/SettingsService",
 ) {}
+
+function normalizeConcurrency(value: number): number {
+  return Math.min(MAX_CONCURRENCY, Math.max(MIN_CONCURRENCY, value));
+}
 
 export const makeSettingsServiceLive = (defaultDeploymentConcurrency: number) =>
   Layer.effect(
@@ -96,7 +102,3 @@ export const makeSettingsServiceLive = (defaultDeploymentConcurrency: number) =>
       } satisfies SettingsServiceShape;
     }),
   );
-
-function normalizeConcurrency(value: number): number {
-  return Math.min(16, Math.max(1, value));
-}

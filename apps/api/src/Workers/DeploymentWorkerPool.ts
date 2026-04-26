@@ -180,7 +180,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
               ),
             );
 
-          // Blue/green: stop previous deployment before switching active
           yield* stopPreviousDeployment(command.appId, command.deploymentId);
 
           const liveUrl = `http://${appRow?.hostname ?? `${slug}.localhost:8080`}`;
@@ -213,7 +212,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
           const deployment = yield* svc.getDeployment(command.deploymentId);
 
           if (command.type === "rollback") {
-            // Rollback: skip source+build, reuse existing image
             const imageTag = deployment.imageTag;
             if (!imageTag) {
               return yield* Effect.fail(new Error("Rollback deployment has no imageTag"));
@@ -223,7 +221,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
             return;
           }
 
-          // Normal build deployment
           const deploymentSource = deployment.source as DeploymentSource;
           yield* svc.updateStatus({ deploymentId: command.deploymentId, status: "building" });
 
@@ -264,8 +261,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
             `Building image ${imageTag} with railpack...`,
           );
 
-          // Pull build/start command overrides from app_settings so the user's
-          // configured railpack flags are honoured for every deployment.
           const buildCfgRow = db
             .select({
               buildCommand: appSettings.buildCommand,
@@ -320,7 +315,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
               yield* source
                 .cleanupSourceDir(command.deploymentId)
                 .pipe(Effect.catch(() => Effect.void));
-              // Remove any Caddy route that may have been added before the failure.
               const appRow = db.select().from(apps).where(eq(apps.id, command.appId)).get();
               if (appRow) {
                 const hostname = appRow.hostname.replace(/:.*$/, "");
@@ -357,8 +351,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
         Effect.andThen(Effect.suspend(() => schedulerLoop)),
       );
 
-      // Startup reconciliation: verify containers are actually running, fix DB
-      // state for any that died while the API was down, then rebuild Caddy routes.
       yield* Effect.gen(function* () {
         const runningDeps = db
           .select()
@@ -372,7 +364,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
         for (const dep of runningDeps) {
           const app = db.select().from(apps).where(eq(apps.id, dep.appId)).get();
           if (!app || !dep.containerId) {
-            // No container — mark stopped and clear activeDeploymentId
             db.update(deploymentsTable)
               .set({ status: "stopped", liveUrl: null, updatedAt: ts })
               .where(eq(deploymentsTable.id, dep.id))
@@ -390,7 +381,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
             .pipe(Effect.catch(() => Effect.succeed(null)));
 
           if (!info || info.state !== "running") {
-            // Container is gone or dead — mark stopped in DB
             db.update(deploymentsTable)
               .set({ status: "stopped", liveUrl: null, updatedAt: ts })
               .where(eq(deploymentsTable.id, dep.id))
@@ -427,10 +417,7 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
           yield* Effect.logInfo("No running deployments to reconcile");
         }
 
-        // Auto-restart pass: any app whose activeDeploymentId points at a
-        // stopped deployment with a built image is brought back online. This
-        // covers the `docker compose down` → `docker compose up` flow where
-        // we want apps to come back automatically.
+        // Bring `compose down` → `compose up` apps back online.
         const appsToRestore = db
           .select()
           .from(apps)
@@ -472,15 +459,11 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
       yield* schedulerLoop.pipe(Effect.forkScoped);
       yield* Effect.logInfo(`Deployment worker pool started with ${workerSlots} slots`);
 
-      // Kick off railpack/mise cache warmup in the background so the very
-      // first /api/source/preflight from the deploy form doesn't pay the
-      // ~15s mise cold start. No-op once warm.
       yield* source.prewarmRailpack();
 
-      // On shutdown: stop all running containers but keep activeDeploymentId
-      // pointed at the deployment so the next startup can auto-restart it.
-      // Wrapped in Effect.uninterruptible so the docker calls can't be cancelled
-      // mid-flight when the parent fiber is interrupted.
+      // Stops running containers but keeps apps.activeDeploymentId set so the next
+      // startup auto-restarts them. Uninterruptible: the docker calls must run to
+      // completion when the parent fiber is interrupted by SIGTERM.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           yield* Effect.logInfo("Shutting down: stopping all running deployments...");
@@ -503,9 +486,6 @@ export const DeploymentWorkerPoolLive = Layer.effectDiscard(
                 .removeContainer(containerId)
                 .pipe(Effect.catch((e) => Effect.logWarning(`Remove failed for ${short}: ${e}`)));
             }
-            // Mark deployment stopped but DON'T clear activeDeploymentId — we
-            // want the next startup's reconciliation to know which deployment
-            // to bring back online.
             db.update(deploymentsTable)
               .set({ status: "stopped", liveUrl: null, updatedAt: nowIso() })
               .where(eq(deploymentsTable.id, dep.id))

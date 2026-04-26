@@ -65,7 +65,6 @@ export const BuildServiceLive = Layer.succeed(BuildService, {
       const planPath = `${sourceDir}/.railpack-plan.json`;
       const infoPath = `${sourceDir}/.railpack-info.json`;
 
-      // Step 1: railpack prepare
       const prepareArgs = [
         "railpack",
         "prepare",
@@ -80,17 +79,10 @@ export const BuildServiceLive = Layer.succeed(BuildService, {
           prepareArgs.push("--env", `${key}=${value}`);
         }
       }
-      // Allow callers to override railpack's auto-detected build / start
-      // commands. Empty strings are ignored — that's how we say "use the
-      // default" without forcing the caller to track undefined.
       const trimmedBuild = buildCommand?.trim();
-      if (trimmedBuild) {
-        prepareArgs.push("--build-cmd", trimmedBuild);
-      }
+      if (trimmedBuild) prepareArgs.push("--build-cmd", trimmedBuild);
       const trimmedStart = startCommand?.trim();
-      if (trimmedStart) {
-        prepareArgs.push("--start-cmd", trimmedStart);
-      }
+      if (trimmedStart) prepareArgs.push("--start-cmd", trimmedStart);
 
       const prepareProc = Bun.spawn(prepareArgs, { stdout: "pipe", stderr: "pipe" });
       const prepareExit = yield* Effect.tryPromise({
@@ -108,7 +100,6 @@ export const BuildServiceLive = Layer.succeed(BuildService, {
         );
       }
 
-      // Step 2: docker buildx build with railpack frontend
       const buildArgs = [
         "docker",
         "buildx",

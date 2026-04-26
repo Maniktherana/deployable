@@ -4,7 +4,19 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 
-import { type RailpackPreflightInfo, SourceService } from "../../Services/SourceService.ts";
+import { SourceService } from "../../Services/SourceService.ts";
+import { getCachedPreflight, putCachedPreflight } from "./preflightCache.ts";
+
+const PREFLIGHT_TMP_ROOT = ".deployable/preflight";
+const UPLOAD_DIR = ".deployable/uploads";
+
+function rmrf(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {
+    // scratch dirs; ignore
+  }
+}
 
 export const gitPreflightRouteLayer = HttpRouter.add(
   "POST",
@@ -19,64 +31,6 @@ export const gitPreflightRouteLayer = HttpRouter.add(
   }),
 );
 
-const PREFLIGHT_TMP_ROOT = ".deployable/preflight";
-/** TTL on cached preflight results — long enough that toggling refs in the
- *  deploy form is instant, short enough that "I just pushed a new build cmd
- *  to my repo" is reflected next time the user opens the form. */
-const PREFLIGHT_CACHE_TTL_MS = 10 * 60 * 1000; // 10 min
-const PREFLIGHT_CACHE_MAX = 64;
-
-type CachedPreflight = {
-  readonly value: RailpackPreflightInfo;
-  readonly expiresAt: number;
-};
-
-/** Process-local cache. Keyed by `archivePath` for upload sources and by
- *  `${gitUrl}@${ref}` for git sources. Entries expire after the TTL above
- *  and the oldest entries are evicted past `PREFLIGHT_CACHE_MAX`. */
-const preflightCache = new Map<string, CachedPreflight>();
-
-function getCachedPreflight(key: string): RailpackPreflightInfo | null {
-  const hit = preflightCache.get(key);
-  if (!hit) return null;
-  if (hit.expiresAt < Date.now()) {
-    preflightCache.delete(key);
-    return null;
-  }
-  // LRU touch
-  preflightCache.delete(key);
-  preflightCache.set(key, hit);
-  return hit.value;
-}
-
-function putCachedPreflight(key: string, value: RailpackPreflightInfo): void {
-  preflightCache.set(key, { value, expiresAt: Date.now() + PREFLIGHT_CACHE_TTL_MS });
-  if (preflightCache.size > PREFLIGHT_CACHE_MAX) {
-    const oldest = preflightCache.keys().next().value;
-    if (oldest !== undefined) preflightCache.delete(oldest);
-  }
-}
-
-/** Best-effort recursive remove — used as cleanup for preflight scratch
- *  directories so we never leave half-extracted sources behind. */
-function rmrf(path: string): void {
-  try {
-    rmSync(path, { recursive: true, force: true });
-  } catch {
-    // ignore — these are throwaway scratch dirs
-  }
-}
-
-/** Run `railpack info` against a freshly extracted upload or a freshly
- *  fetched git ref so the deploy form can prefill its build/start command
- *  fields with the same defaults the actual build would use.
- *
- *  Performance notes:
- *   - Git fetches use the SourceService fast path (HTTPS tarball / `git
- *     archive` / shallow blobless clone, in that order).
- *   - Successful results are cached in-process for `PREFLIGHT_CACHE_TTL_MS`
- *     so toggling between refs in the form is instant on revisits.
- */
 export const railpackPreflightRouteLayer = HttpRouter.add(
   "POST",
   "/api/source/preflight",
@@ -128,8 +82,6 @@ export const railpackPreflightRouteLayer = HttpRouter.add(
     return HttpServerResponse.jsonUnsafe(result);
   }),
 );
-
-const UPLOAD_DIR = ".deployable/uploads";
 
 export const uploadArchiveRouteLayer = HttpRouter.add(
   "POST",

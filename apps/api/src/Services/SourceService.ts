@@ -49,25 +49,14 @@ export interface SourceServiceShape {
   }) => Effect.Effect<void, DirectoryCopyError>;
   readonly prepareSourceDir: (deploymentId: string) => Effect.Effect<string>;
   readonly cleanupSourceDir: (deploymentId: string) => Effect.Effect<void>;
-  /** Run `railpack info <path> --format json` and surface the detected
-   *  provider + build/start commands so the deploy form can pre-fill its
-   *  override fields with sensible defaults. */
   readonly railpackPreflight: (
     sourceDir: string,
   ) => Effect.Effect<RailpackPreflightInfo, RailpackPreflightError>;
-  /** Fetch only the file tree at a given git ref (no `.git` directory).
-   *  Used by preflight to detect build/start defaults as cheaply as
-   *  possible — picks the best strategy per host (HTTPS tarball for known
-   *  forges, blobless shallow clone otherwise). */
   readonly fetchGitTreeShallow: (opts: {
     url: string;
     ref: string;
     targetDir: string;
   }) => Effect.Effect<void, GitCloneError>;
-  /** Best-effort prewarm of railpack/mise's caches. Safe to call any
-   *  number of times — completes near-instantly once the cache is warm.
-   *  Intended for boot-time invocation so the first user-facing preflight
-   *  doesn't pay the ~15s mise cold start. */
   readonly prewarmRailpack: () => Effect.Effect<void>;
 }
 
@@ -76,6 +65,7 @@ export class SourceService extends Context.Service<SourceService, SourceServiceS
 ) {}
 
 const SOURCES_ROOT = ".deployable/sources";
+const ARCHIVE_NOISE = new Set(["pax_global_header", ".DS_Store", "__MACOSX"]);
 
 function parseRefType(refName: string): GitRemoteRef["type"] {
   if (refName.startsWith("refs/heads/")) return "branch";
@@ -89,10 +79,8 @@ function stripRefPrefix(refName: string): string {
   return refName;
 }
 
-/** If `dir` contains exactly one entry and that entry is itself a directory,
- *  move its contents up one level so `dir/<child>/x` becomes `dir/x`. This
- *  matches the layout produced by GitHub's "Download ZIP" and similar tools.
- *  Best-effort — silent on failure since extraction itself succeeded. */
+// Many archive sources (GitHub "Download ZIP", `git archive`, `tar czvf foo.tgz some-folder/`)
+// wrap their contents in a single top-level directory; railpack expects files at the root.
 async function flattenSingleTopDir(dir: string): Promise<void> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
@@ -102,12 +90,7 @@ async function flattenSingleTopDir(dir: string): Promise<void> {
   } catch {
     return;
   }
-  // Some archives (notably from `git archive`) emit a `pax_global_header`
-  // sibling to the project folder; ignore well-known noise files when
-  // deciding whether the archive is "single-top-level-dir".
-  const significant = entries.filter(
-    (e) => e !== "pax_global_header" && e !== ".DS_Store" && e !== "__MACOSX",
-  );
+  const significant = entries.filter((e) => !ARCHIVE_NOISE.has(e));
   if (significant.length !== 1) return;
   const only = significant[0]!;
   let stat: Awaited<ReturnType<typeof fs.stat>>;
@@ -124,20 +107,14 @@ async function flattenSingleTopDir(dir: string): Promise<void> {
     await fs.rename(path.join(innerDir, name), path.join(dir, name));
   }
   await fs.rmdir(innerDir).catch(() => {});
-  // Clean up ignored siblings (e.g. pax_global_header) we left behind.
   for (const e of entries) {
-    if (e !== only && (e === "pax_global_header" || e === ".DS_Store" || e === "__MACOSX")) {
+    if (e !== only && ARCHIVE_NOISE.has(e)) {
       await fs.rm(path.join(dir, e), { recursive: true, force: true }).catch(() => {});
     }
   }
 }
 
-/** Try to map a clone URL to a fast HTTPS tarball endpoint. Falls back to
- *  null when the host doesn't expose one — callers should then use a
- *  blobless `git clone` instead. Supports: github.com, gitlab.com,
- *  codeberg.org, sr.ht, self-hosted Gitea (best-effort heuristic). */
 function tarballUrlForGitRef(rawUrl: string, ref: string): string | null {
-  // Normalise scp-style `git@host:owner/repo.git` to https.
   let url = rawUrl.trim();
   const scp = url.match(/^git@([^:]+):(.+)$/);
   if (scp) url = `https://${scp[1]}/${scp[2]}`;
@@ -148,7 +125,6 @@ function tarballUrlForGitRef(rawUrl: string, ref: string): string | null {
     return null;
   }
   const host = parsed.hostname.toLowerCase();
-  // owner/repo (strip leading slash + trailing .git)
   const path = parsed.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
   const parts = path.split("/").filter(Boolean);
   if (parts.length < 2) return null;
@@ -239,6 +215,7 @@ export const SourceServiceLive = Layer.succeed(SourceService, {
               tool === "unzip"
                 ? `unable to extract .zip archive: '${tool}' is not installed in the API runtime (${msg})`
                 : `unable to extract archive with '${tool}': ${msg}`,
+              { cause },
             );
           }
         };
@@ -249,10 +226,6 @@ export const SourceServiceLive = Layer.succeed(SourceService, {
           throw new Error(stderr || `archive extract exited with code ${exitCode}`);
         }
 
-        // Many archive sources (e.g. a GitHub "Download ZIP", `git archive`,
-        // a `tar czvf foo.tgz some-folder/`) wrap their contents in a single
-        // top-level directory. railpack expects the project files at the
-        // root of `targetDir`, so flatten that single child up if present.
         await flattenSingleTopDir(targetDir);
       },
       catch: (cause) =>
@@ -303,10 +276,6 @@ export const SourceServiceLive = Layer.succeed(SourceService, {
         if (tarballUrl) {
           const res = await fetch(tarballUrl, { redirect: "follow" });
           if (res.ok && res.body) {
-            // Pass the response body directly as `tar`'s stdin. Bun
-            // accepts a ReadableStream here and forwards it without us
-            // having to babysit a writer (which deadlocks if the consumer
-            // isn't draining fast enough).
             const proc = Bun.spawn(["tar", "-xzf", "-", "-C", targetDir], {
               stdin: res.body,
               stdout: "pipe",
@@ -359,9 +328,7 @@ export const SourceServiceLive = Layer.succeed(SourceService, {
           };
           detectedProviders?: string[];
         };
-        // The build step's last shell command is what railpack would execute
-        // for the "build" phase. Most providers emit a single `cmd` entry —
-        // pick the last one to be safe (e.g. yarn workspaces multi-step).
+        // last cmd is the actual build (multi-step providers, e.g. yarn workspaces)
         const buildStep = parsed.plan?.steps?.find((s) => s.name === "build");
         const buildCmd = buildStep?.commands
           ?.filter((c) => typeof c.cmd === "string" && c.cmd.length > 0)
@@ -381,11 +348,7 @@ export const SourceServiceLive = Layer.succeed(SourceService, {
 
   prewarmRailpack: () =>
     Effect.sync(() => {
-      // Best-effort. Done synchronously-launched but asynchronously-awaited
-      // off the main fiber so server startup doesn't block on it. If the
-      // image was prewarmed at build time these spawns are <100ms each;
-      // otherwise they pay the ~15s mise cold-start once and then never
-      // again for the lifetime of the container.
+      // Pays the ~15s mise cold-start once, off the main fiber, so the first user-facing preflight is fast.
       void (async () => {
         const fs = await import("fs");
         const root = "/tmp/deployable-prewarm";
