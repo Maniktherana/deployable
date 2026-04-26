@@ -1,0 +1,17 @@
+**/node_modules
+**/dist
+**/.turbo
+**/.next
+**/build
+**/coverage
+**/.cache
+**/.DS_Store
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+tooling/data
+*.log
+.vscode
+.idea

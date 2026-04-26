@@ -1,0 +1,72 @@
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    ports:
+      - "${INGRESS_PORT:-8080}:80"
+      - "2019:2019"
+    volumes:
+      - ./tooling/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tooling/data/caddy:/data
+    networks:
+      - default
+      - deployable
+
+  api:
+    build:
+      # Build from repo root so the Dockerfile can COPY package.json + source.
+      context: .
+      dockerfile: tooling/api/Dockerfile
+    image: deployable-api:prod
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4000
+      PUBLIC_BASE_URL: http://localhost:${INGRESS_PORT:-8080}
+      DATABASE_PATH: /data/deployable.sqlite
+      REDIS_URL: redis://redis:6379
+      REGISTRY_URL: registry:5000
+      CADDY_ADMIN_URL: http://caddy:2019
+    volumes:
+      # Only the runtime data + docker socket — source is baked into the image.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./tooling/data/api:/data
+    networks:
+      - default
+      - deployable
+    # Give the API enough time to stop containers and update DB on shutdown.
+    stop_grace_period: 30s
+    # api depends on caddy so on shutdown: web stops first, then api, then caddy
+    # this ensures api can still reach caddy's admin API during its own cleanup
+    depends_on:
+      - caddy
+      - redis
+      - registry
+
+  web:
+    build:
+      context: .
+      dockerfile: tooling/web/Dockerfile
+    image: deployable-web:prod
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      - api
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./tooling/data/redis:/data
+
+  registry:
+    image: registry:2
+    ports:
+      - "${REGISTRY_PORT:-5000}:5000"
+    volumes:
+      - ./tooling/data/registry:/var/lib/registry
+
+networks:
+  deployable:
+    external: true

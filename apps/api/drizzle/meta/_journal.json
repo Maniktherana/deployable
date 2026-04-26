@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1777213307441,
+      "tag": "0001_daily_santa_claus",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1777231036695,
+      "tag": "0001_conscious_maggott",
+      "breakpoints": true
+    }
+  ]
+}
