@@ -8,6 +8,8 @@ The whole thing comes up with `docker compose up`.
 
 ## Getting started
 
+First time setup:
+
 ```bash
 docker network create deployable
 docker compose up --build
@@ -15,8 +17,6 @@ open http://localhost:8080
 ```
 
 Then create a project from a public Git URL (e.g. `https://github.com/railwayapp-templates/express-starter`) or drop a `.zip` / `.tar.gz` of any [Railpack-supported](https://railpack.com/docs/languages) source. When the deploy goes green you'll get a live URL like `http://express-starter.localhost:8080`.
-
-No external accounts, no API keys.
 
 ---
 
